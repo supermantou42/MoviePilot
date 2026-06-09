@@ -1,0 +1,12 @@
+# 本地构建检出的上游源码（CI 临时目录）
+/upstream/
+.last-built-sha
+
+# Python
+__pycache__/
+*.py[cod]
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/

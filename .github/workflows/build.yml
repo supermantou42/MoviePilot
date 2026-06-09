@@ -1,0 +1,136 @@
+name: Build patched image
+
+# 跟随上游 jxxghp/MoviePilot@v2：每天检查上游是否有新提交，有则叠加站点认证解锁补丁
+# 并构建镜像推送到 Docker Hub。手动触发(workflow_dispatch)会强制构建。
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "忽略未变更检测，强制重建"
+        type: boolean
+        default: true
+  schedule:
+    # 每天 18:30 UTC（北京时间次日 02:30）检查并构建
+    - cron: "30 18 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "patch/**"
+      - "scripts/apply_patch.sh"
+      - ".github/workflows/build.yml"
+
+concurrency:
+  group: build-patched-image
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: jxxghp/MoviePilot
+  UPSTREAM_REF: v2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Sync upstream & build
+    steps:
+      - name: Checkout overlay (this repo)
+        uses: actions/checkout@v4
+
+      - name: Resolve upstream commit
+        id: up
+        run: |
+          sha=$(git ls-remote "https://github.com/${UPSTREAM_REPO}" "refs/heads/${UPSTREAM_REF}" | cut -f1)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          echo "上游 ${UPSTREAM_REPO}@${UPSTREAM_REF} = $sha"
+
+      # 用 cache 记录上次成功构建的上游 SHA：命中说明上游未变更 -> 跳过构建
+      - name: Check already-built marker
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .last-built-sha
+          key: built-${{ steps.up.outputs.sha }}
+
+      - name: Decide whether to build
+        id: decide
+        run: |
+          force="${{ github.event_name == 'workflow_dispatch' || github.event_name == 'push' }}"
+          if [ "${{ steps.cache.outputs.cache-hit }}" = "true" ] && [ "$force" != "true" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "上游未变更（${{ steps.up.outputs.short }} 已构建过），跳过。"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout upstream source
+        if: steps.decide.outputs.build == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: ${{ env.UPSTREAM_REF }}
+          path: upstream
+
+      - name: Read upstream app version
+        if: steps.decide.outputs.build == 'true'
+        id: ver
+        run: |
+          v=$(sed -ne "s/^APP_VERSION\s*=\s*'\(.*\)'/\1/p" upstream/version.py)
+          echo "app_version=${v}" >> "$GITHUB_OUTPUT"
+          echo "上游版本: ${v}"
+
+      - name: Apply site-auth unlock patch
+        if: steps.decide.outputs.build == 'true'
+        run: bash scripts/apply_patch.sh upstream
+
+      - name: Docker meta
+        if: steps.decide.outputs.build == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/moviepilot
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.ver.outputs.app_version }}
+            type=raw,value=${{ steps.ver.outputs.app_version }}-${{ steps.up.outputs.short }}
+
+      - name: Set up QEMU
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build & push
+        if: steps.decide.outputs.build == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: upstream
+          file: upstream/docker/Dockerfile
+          # 默认仅 amd64（多数自托管为 x86）。如需 arm64，取消下行注释（QEMU 模拟，构建会显著变慢）。
+          platforms: linux/amd64
+          # platforms: linux/amd64,linux/arm64/v8
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=mp-patched
+          cache-to: type=gha,scope=mp-patched,mode=max
+
+      # 仅在构建成功后写入已构建标记，避免失败后误标记为已构建
+      - name: Write built marker
+        if: steps.decide.outputs.build == 'true'
+        run: echo "${{ steps.up.outputs.sha }}" > .last-built-sha
+
+      - name: Save built marker
+        if: steps.decide.outputs.build == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .last-built-sha
+          key: built-${{ steps.up.outputs.sha }}
