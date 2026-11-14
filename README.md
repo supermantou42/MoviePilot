@@ -8,7 +8,7 @@
 
 新增独立工作流 **Build patched v3 image**（`.github/workflows/build-v3.yml`），
 跟随上游 `v3` 分支，镜像发布为 `DOCKER_USERNAME/moviepilot-v3`，不覆盖原 V2 镜像。
-每天香港时间 02:45 构建，也可在 Actions 手动触发；复用原有两个 Docker Hub Secrets。
+定时构建已关闭，可在 Actions 手动触发或由相关代码推送触发；复用原有两个 Docker Hub Secrets。
 工作流先解析并固定后端、插件与资源提交，再构建、执行离线认证和索引检查，
 检查通过后才推送；系统更新层按周刷新，避免长期复用旧系统软件包缓存。
 

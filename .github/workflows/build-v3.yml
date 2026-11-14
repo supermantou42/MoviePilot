@@ -2,8 +2,6 @@ name: Build patched v3 image
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "45 18 * * *"
   push:
     branches: [main, codex/v3-migration]
     paths:
