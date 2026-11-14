@@ -38,10 +38,28 @@ COPY . /app
 
 ## 尚未验证
 
-- 完整上游 Dockerfile 从零重建：已尝试，但镜像层下载缓慢后中止；上述验证复用了官方运行环境，未重新安装所有系统和 Python 依赖。
 - 完整应用的启动、HTTP readiness、实际 PT 站点搜索/下载和用户 V2 数据库迁移。
 - ARM64、Windows、自由线程 V3t。
-- 新工作流在 GitHub Actions 上的实际构建与推送；本次没有提交、推送或发布远程镜像。
+
+## GitHub Actions 构建和发布
+
+2026-11-14 香港时间 17:04，代码提交 `c97f71a6802ce6d61f90b7fe7e7c68127c54627c`
+在 [Actions 运行 43578452074](https://github.com/supermantou42/MoviePilot/actions/runs/43578452074)
+完成完整上游 Dockerfile 构建、离线运行验证和 Docker Hub 推送，任务结论为 `success`。
+这补齐了本地验证阶段未完成的从源码构建检查。
+
+该次构建固定资源提交 `08e38b49d69183a3651236a2200005426819a5a6`、
+插件提交 `cdb69b9361dfffa631a66218a520630b9b6a8919`，运行验证再次输出
+`auth_level=2, catalog_entries=200, repeated installation unchanged`。
+
+发布的 `linux/amd64` 镜像：
+
+- `supermantou/moviepilot-v3:latest`
+- `supermantou/moviepilot-v3:v3.2.6`
+- `supermantou/moviepilot-v3:v3.2.6-ec12c15`
+
+三个标签均指向 `sha256:5e71ce112d84ff2f319682e556bad4db7fdf0dcd989fb8bed4fe234218f62b33`。
+已通过 Docker Hub 标签接口独立确认 `latest` 的摘要和架构。
 
 新增 V3 工作流在完整源码构建后执行同一离线验证，成功后才向独立的
 `DOCKER_USERNAME/moviepilot-v3` 仓库推送。V2 工作流保持独立。
