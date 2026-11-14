@@ -1,12 +1,13 @@
 """站点认证解锁补丁（自用 / 学习研究）——二进制自愈版。
 
-MoviePilot 的「用户认证」门槛位于 Cython 编译扩展 ``app/helper/sites.*.so``：
+MoviePilot 的「用户认证」门槛位于 Cython 编译扩展：V2 的 ``app/helper/sites.*.so``
+或 V3 的 ``app/application/site/sites.*.so``。本补丁仅支持 ELF64 x86-64 标准 Python：
 ``BByvbqGwZwqoYFxE.get_auth_level`` 返回两个缓存整数之一——内部校验通过时返回
 ``number_tab[2]``（已认证，等级 2），否则返回 ``number_tab[1]``（未认证，等级 1）。
 ``SitesHelper.get_indexers`` 在 C 层直接读取该等级（``if auth_level < 2: return []``），
 因此仅在 Python 层覆盖 ``auth_level`` 属性无效。
 
-本模块在 ``app.helper`` 包导入时（早于编译模块 ``app.helper.sites`` 首次加载）就地改写
+本模块在对应站点包导入时（早于编译模块 ``sites`` 首次加载）就地改写
 磁盘上的 ``.so``：把 ``get_auth_level`` 未认证返回路径重定向到已认证返回值，使其恒返回
 等级 2。补丁是「自愈」的——即便资源更新重新下载了未打补丁的 ``.so``，下次启动会再次自动
 打上；并且与偏移无关（通过 ELF 符号表定位函数，再在函数体内找到指向 ``number_tab`` 相邻
@@ -19,9 +20,14 @@ import glob
 import logging
 import os
 import struct
+import tempfile
+import stat
 
 _PKG_DIR = os.path.dirname(os.path.abspath(__file__))
-_GET_AUTH_LEVEL_SYM = b"__pyx_pw_3app_6helper_5sites_16BByvbqGwZwqoYFxE_15get_auth_level"
+_GET_AUTH_LEVEL_SYMS = (
+    b"__pyx_pw_3app_6helper_5sites_16BByvbqGwZwqoYFxE_15get_auth_level",
+    b"__pyx_pw_3app_11application_4site_5sites_16BByvbqGwZwqoYFxE_15get_auth_level",
+)
 
 _log = logging.getLogger(__name__)
 
@@ -69,13 +75,21 @@ def patch_bytes(data: bytearray) -> str:
     """就地修补 ELF ``.so`` 字节，返回状态字符串。"""
     if data[:4] != b"\x7fELF":
         return "skip: not ELF"
+    if len(data) < 64 or data[4:6] != b"\x02\x01" or struct.unpack_from("<H", data, 18)[0] != 62:
+        return "skip: requires little-endian ELF64 x86-64"
     secs = list(_iter_section_headers(data))
-    va, size = _find_symbol(data, secs, _GET_AUTH_LEVEL_SYM)
+    va, size = None, None
+    for name in _GET_AUTH_LEVEL_SYMS:
+        va, size = _find_symbol(data, secs, name)
+        if va is not None:
+            break
     if va is None or not size:
         return "skip: get_auth_level symbol not found"
     foff = _va_to_off(secs, va)
     if foff is None:
         return "skip: cannot map function VA"
+    if foff + size > len(data):
+        return "skip: truncated function"
 
     # 收集函数体内所有 `mov rax,[rip+disp32]`(48 8B 05 ..) 及其目标地址
     loads = []
@@ -109,13 +123,24 @@ def patch_file(path: str) -> str:
         data = bytearray(f.read())
     status = patch_bytes(data)
     if status.startswith("patched"):
-        with open(path, "wb") as f:
-            f.write(data)
+        # 同目录临时文件 + 原子替换，避免写入中断截断原扩展；保留权限。
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+        fd, temporary = tempfile.mkstemp(prefix=".sites-unlock-", dir=os.path.dirname(os.path.abspath(path)))
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(temporary, mode)
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
     return status
 
 
 def install() -> None:
-    """在 ``app.helper.sites`` 首次加载前，就地修补同目录下的 ``sites.*.so``（幂等）。"""
+    """在站点扩展首次加载前，修补同目录下的受支持扩展（幂等）。"""
     try:
         sos = glob.glob(os.path.join(_PKG_DIR, "sites.*.so")) + \
               glob.glob(os.path.join(_PKG_DIR, "sites.*.pyd"))

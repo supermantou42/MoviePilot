@@ -1,0 +1,109 @@
+name: Build patched v3 image
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "45 18 * * *"
+  push:
+    branches: [main, codex/v3-migration]
+    paths:
+      - "patch/**"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/build-v3.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-patched-v3-image
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve and pin upstream revision
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          sha=$(git ls-remote https://github.com/jxxghp/MoviePilot.git refs/heads/v3 | cut -f1)
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+          for payload in resources plugins; do
+            if [[ "$payload" == resources ]]; then repo=MoviePilot-Resources; else repo=MoviePilot-Plugins; fi
+            revision=$(git ls-remote "https://github.com/jxxghp/${repo}.git" refs/heads/main | cut -f1)
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+            echo "$payload=$revision" >> "$GITHUB_OUTPUT"
+          done
+      - uses: actions/checkout@v4
+        with:
+          repository: jxxghp/MoviePilot
+          ref: ${{ steps.source.outputs.sha }}
+          path: upstream
+      - name: Apply overlay and check scripts
+        run: |
+          python -m unittest discover -s tests -v
+          bash -n scripts/apply_patch.sh
+          bash scripts/apply_patch.sh upstream
+          test -f upstream/app/application/site/_sites_unlock.py
+      - name: Read version
+        id: version
+        run: |
+          version=$(python -c "import runpy; print(runpy.run_path('upstream/version.py')['APP_VERSION'])")
+          [[ "$version" == v3.* ]]
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+      - name: Resolve weekly system refresh key
+        id: system
+        run: echo "key=$(date -u +%G-W%V)-$(cat upstream/docker/system-baseline)" >> "$GITHUB_OUTPUT"
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/moviepilot-v3
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ steps.version.outputs.value }}
+            type=raw,value=${{ steps.version.outputs.value }}-${{ steps.source.outputs.short }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Build locally before publishing
+        uses: docker/build-push-action@v7
+        with:
+          context: upstream
+          file: upstream/docker/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.sha }}
+          build-args: |
+            MOVIEPILOT_PYTHON_VARIANT=standard
+            MOVIEPILOT_RESOURCES_REF=${{ steps.source.outputs.resources }}
+            MOVIEPILOT_PLUGINS_REF=${{ steps.source.outputs.plugins }}
+            MOVIEPILOT_SYSTEM_REFRESH_ID=${{ steps.system.outputs.key }}
+          cache-from: type=gha,scope=mp-patched-v3
+          cache-to: type=gha,scope=mp-patched-v3,mode=max
+      - name: Verify runtime authentication result
+        timeout-minutes: 3
+        env:
+          IMAGE: ${{ secrets.DOCKER_USERNAME }}/moviepilot-v3:latest
+        run: |
+          docker run --rm --network none --entrypoint /opt/venv/bin/python \
+            -e CONFIG_DIR=/tmp/moviepilot-overlay-check \
+            -v "$PWD/scripts/verify_runtime.py:/verify_runtime.py:ro" \
+            "$IMAGE" /verify_runtime.py
+      - name: Publish verified image
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            test -n "$tag" && docker push "$tag"
+          done <<< "$TAGS"

@@ -4,6 +4,34 @@
 > CI 流水线：每天自动拉取上游 [`jxxghp/MoviePilot@v2`](https://github.com/jxxghp/MoviePilot)
 > 最新源码，叠加补丁后构建 Docker 镜像并推送到 Docker Hub。
 
+## V3 迁移
+
+新增独立工作流 **Build patched v3 image**（`.github/workflows/build-v3.yml`），
+跟随上游 `v3` 分支，镜像发布为 `DOCKER_USERNAME/moviepilot-v3`，不覆盖原 V2 镜像。
+每天香港时间 02:45 构建，也可在 Actions 手动触发；复用原有两个 Docker Hub Secrets。
+工作流先解析并固定后端、插件与资源提交，再构建、执行离线认证和索引检查，
+检查通过后才推送；系统更新层按周刷新，避免长期复用旧系统软件包缓存。
+
+`scripts/apply_patch.sh` 会识别 V2 的 `app/helper` 和 V3 的 `app/application/site`，
+在实际站点包导入前运行共享补丁，并为 Playwright Node 驱动安装 `libatomic1`。
+V3 使用标准 Python 运行时，只支持 `linux/amd64`；尚不支持 ARM64、Windows 或 V3t。
+补丁依赖已知 Cython 函数符号和 x86-64 指令结构，上游资源变化后必须重新验证。
+
+本地检查：
+
+```bash
+python -m unittest discover -s tests -v
+bash scripts/apply_patch.sh upstream
+docker build -f upstream/docker/Dockerfile -t moviepilot-v3-overlay:local upstream
+docker run --rm --network none --entrypoint /opt/venv/bin/python \
+  -e CONFIG_DIR=/tmp/moviepilot-overlay-check \
+  -v "$PWD/scripts/verify_runtime.py:/verify_runtime.py:ro" \
+  moviepilot-v3-overlay:local /verify_runtime.py
+```
+
+V3 会迁移数据库与配置，请使用 V2 配置目录的备份副本验证，不能让两个实例共用配置目录。
+上游版本变化说明见 [V2 到 V3](https://github.com/jxxghp/MoviePilot/blob/v3/docs/v2-to-v3-overview.md)。
+
 ## 这个补丁做了什么
 
 上游的「站点认证（AUTH_SITE / 用户认证）」会在你未通过 PT 站点认证时，锁住站点搜索 /
