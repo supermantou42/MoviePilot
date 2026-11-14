@@ -1,7 +1,7 @@
 # MoviePilot（站点认证解锁 · 自用补丁叠加）
 
 > 仅供个人自托管与学习研究使用。本仓库**不含上游源码**，只维护一个体积极小的补丁与
-> CI 流水线：每天自动拉取上游 [`jxxghp/MoviePilot@v2`](https://github.com/jxxghp/MoviePilot)
+> CI 流水线：构建时拉取上游 [`jxxghp/MoviePilot@v2`](https://github.com/jxxghp/MoviePilot)
 > 最新源码，叠加补丁后构建 Docker 镜像并推送到 Docker Hub。
 
 ## V3 迁移
@@ -48,7 +48,7 @@ V3 会迁移数据库与配置，请使用 V2 配置目录的备份副本验证�
 
 ## 工作方式（Overlay 重建）
 
-CI（[`.github/workflows/build.yml`](.github/workflows/build.yml)）每天：
+CI（[`.github/workflows/build.yml`](.github/workflows/build.yml)）由手动或代码推送触发，定时构建已关闭：
 
 1. 解析上游 `v2` 分支最新提交，若与上次构建相同则跳过（节省额度）；
 2. 检出上游源码 → 运行 `apply_patch.sh` 叠加补丁；
