@@ -1,6 +1,6 @@
 name: Build patched image
 
-# 跟随上游 jxxghp/MoviePilot@v2：每天检查上游是否有新提交，有则叠加站点认证解锁补丁
+# 跟随上游 jxxghp/MoviePilot@v2：构建时检查上游是否有新提交，有则叠加站点认证解锁补丁
 # 并构建镜像推送到 Docker Hub。手动触发(workflow_dispatch)会强制构建。
 on:
   workflow_dispatch:
@@ -9,9 +9,6 @@ on:
         description: "忽略未变更检测，强制重建"
         type: boolean
         default: true
-  schedule:
-    # 每天 18:30 UTC（北京时间次日 02:30）检查并构建
-    - cron: "30 18 * * *"
   push:
     branches: [main]
     paths:
